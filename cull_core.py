@@ -70,8 +70,10 @@ def find_exact_duplicates(root: str|Path, *, min_size: int=1) -> list[DuplicateG
 
 def normalized_name(path: str|Path) -> str:
     stem=Path(path).stem.lower()
-    stem=re.sub(r'\b(copy|duplicate|final|new|old|backup|bak)\b','',stem)
+    # Separators first: \b treats '_' as a word character, so 'report_final'
+    # would otherwise keep its marker.
     stem=re.sub(r'\(\d+\)|[_\-.\s]+',' ',stem)
+    stem=re.sub(r'\b(copy|duplicate|final|new|old|backup|bak)\b','',stem)
     stem=re.sub(r'\s+',' ',stem).strip()
     return stem
 
@@ -92,13 +94,19 @@ def reclaimable_bytes(groups: Iterable[DuplicateGroup]) -> int:
 
 def quarantine(root: str|Path, paths: Iterable[str|Path]) -> Path:
     root=Path(root).expanduser().resolve()
-    batch=root/'.cull-quarantine'/time.strftime('%Y%m%d-%H%M%S')
-    batch.mkdir(parents=True,exist_ok=False)
-    manifest={'root':str(root),'batch':str(batch),'moved':[]}
+    # Validate every path before moving any, so a bad selection cannot leave
+    # files moved without a manifest to restore them from.
+    planned=[]
     for raw in paths:
         src=Path(raw).resolve()
-        try: rel=src.relative_to(root)
+        try: planned.append((src,src.relative_to(root)))
         except ValueError: raise ValueError(f'{src} is outside scan root')
+    stamp=time.strftime('%Y%m%d-%H%M%S'); batch=root/'.cull-quarantine'/stamp; n=1
+    while True:
+        try: batch.mkdir(parents=True,exist_ok=False); break
+        except FileExistsError: n+=1; batch=root/'.cull-quarantine'/f'{stamp}-{n}'
+    manifest={'root':str(root),'batch':str(batch),'moved':[]}
+    for src,rel in planned:
         dest=batch/rel; dest.parent.mkdir(parents=True,exist_ok=True)
         if dest.exists(): dest=dest.with_name(dest.name+'.'+uuid.uuid4().hex[:8])
         shutil.move(str(src),str(dest)); manifest['moved'].append({'from':str(src),'to':str(dest)})
